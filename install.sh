@@ -1,0 +1,161 @@
+#!/bin/bash
+set -e
+
+# PoolForge Installer for Ubuntu LTS
+# Usage: curl -sSL https://raw.githubusercontent.com/Paul-Cradduck/PoolForge-Releases/main/install.sh | sudo bash
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+echo "╔══════════════════════════════════╗"
+echo "║       PoolForge Installer        ║"
+echo "╚══════════════════════════════════╝"
+
+# Check root
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}Error: must run as root${NC}"
+  exit 1
+fi
+
+# Check Ubuntu
+if ! grep -qi ubuntu /etc/os-release 2>/dev/null; then
+  echo -e "${RED}Error: Ubuntu LTS required${NC}"
+  exit 1
+fi
+
+# Check architecture
+ARCH=$(uname -m)
+if [ "$ARCH" != "x86_64" ]; then
+  echo -e "${RED}Error: x86_64 required, got $ARCH${NC}"
+  exit 1
+fi
+
+echo "Installing dependencies..."
+apt-get update -qq
+apt-get install -y -qq mdadm lvm2 smartmontools samba nfs-kernel-server curl > /dev/null 2>&1
+echo -e "${GREEN}✓ Dependencies installed${NC}"
+
+# Phase 5: Disable mdadm systemd services so PoolForge controls array assembly
+MDADM_SERVICES="mdmonitor.service mdadm.service mdadm-waitidle.service"
+for svc in $MDADM_SERVICES; do
+  if systemctl list-unit-files "$svc" &>/dev/null; then
+    systemctl stop "$svc" 2>/dev/null || true
+    systemctl disable "$svc" 2>/dev/null || true
+    systemctl mask "$svc" 2>/dev/null || true
+    echo -e "${GREEN}✓ Disabled mdadm service: $svc${NC}"
+  else
+    echo "  mdadm service not found (skipped): $svc"
+  fi
+done
+echo -e "${GREEN}✓ mdadm auto-assembly disabled. PoolForge will manage all array assembly.${NC}"
+
+echo "Downloading PoolForge..."
+RELEASE_URL="https://github.com/Paul-Cradduck/PoolForge-Releases/releases/latest/download/poolforge-linux-amd64"
+if curl -fsSL "$RELEASE_URL" -o /usr/local/bin/poolforge 2>/dev/null; then
+  chmod +x /usr/local/bin/poolforge
+else
+  echo -e "${RED}✗ Failed to download PoolForge binary${NC}"
+  exit 1
+fi
+chmod +x /usr/local/bin/poolforge
+echo -e "${GREEN}✓ PoolForge binary installed${NC}"
+
+# Create data directory
+mkdir -p /var/lib/poolforge
+echo -e "${GREEN}✓ Data directory created${NC}"
+
+# Create systemd service
+cat > /etc/systemd/system/poolforge.service << 'EOF'
+[Unit]
+Description=PoolForge Storage Manager
+After=network.target mdadm.service lvm2-activation.service
+Wants=mdadm.service lvm2-activation.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/poolforge serve --addr 0.0.0.0:8080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable poolforge
+echo -e "${GREEN}✓ Systemd service created and enabled${NC}"
+
+# Create config for auth (optional)
+if [ ! -f /etc/poolforge.conf ]; then
+  cat > /etc/poolforge.conf << 'EOF'
+# PoolForge Configuration
+# Uncomment and set credentials for web UI authentication
+#POOLFORGE_USER=admin
+#POOLFORGE_PASS=changeme
+#POOLFORGE_ADDR=0.0.0.0:8080
+#POOLFORGE_WEBHOOK=
+EOF
+  echo -e "${GREEN}✓ Config file created at /etc/poolforge.conf${NC}"
+fi
+
+# Update service to use config
+cat > /etc/systemd/system/poolforge.service << 'EOF'
+[Unit]
+Description=PoolForge Storage Manager
+After=network.target mdadm.service lvm2-activation.service
+Wants=mdadm.service lvm2-activation.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/poolforge.conf
+ExecStart=/bin/bash -c '/usr/local/bin/poolforge serve \
+  --addr ${POOLFORGE_ADDR:-0.0.0.0:8080} \
+  ${POOLFORGE_USER:+--user $POOLFORGE_USER} \
+  ${POOLFORGE_PASS:+--pass $POOLFORGE_PASS} \
+  ${POOLFORGE_WEBHOOK:+--webhook $POOLFORGE_WEBHOOK}'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+
+# Phase 5: Back up existing metadata for safe upgrade
+METADATA_FILE="/var/lib/poolforge/metadata.json"
+BACKUP_FILE="/var/lib/poolforge/metadata.json.pre-phase5-backup"
+if [ -f "$METADATA_FILE" ] && [ ! -f "$BACKUP_FILE" ]; then
+  cp "$METADATA_FILE" "$BACKUP_FILE"
+  echo -e "${GREEN}✓ Metadata backed up to $BACKUP_FILE${NC}"
+fi
+
+# Phase 5: Ensure boot config has AUTO -all
+if command -v poolforge &>/dev/null; then
+  poolforge boot-config-regenerate 2>/dev/null || true
+fi
+
+echo ""
+echo -e "${GREEN}══════════════════════════════════════${NC}"
+echo -e "${GREEN}  PoolForge installed successfully!${NC}"
+echo -e "${GREEN}══════════════════════════════════════${NC}"
+echo ""
+echo "  Binary:   /usr/local/bin/poolforge"
+echo "  Config:   /etc/poolforge.conf"
+echo "  Data:     /var/lib/poolforge/"
+echo "  Service:  poolforge.service"
+echo ""
+echo "Quick start:"
+echo "  1. Edit /etc/poolforge.conf to set credentials"
+echo "  2. sudo systemctl start poolforge"
+echo "  3. Open http://$(hostname -I | awk '{print $1}'):8080"
+echo ""
+echo "CLI usage:"
+echo "  poolforge pool create --name mypool --disks /dev/sda,/dev/sdb"
+echo "  poolforge pool list"
+echo "  poolforge pool import"
+echo ""

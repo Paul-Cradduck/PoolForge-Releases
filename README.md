@@ -1,8 +1,9 @@
 # PoolForge
 
 <p align="center">
-  <img src="logo/poolforge_banner1.png" alt="PoolForge" width="400">
+  <img src="https://raw.githubusercontent.com/Paul-Cradduck/PoolForge-Releases/main/logo/poolforge_banner1.png" alt="PoolForge" width="400">
 </p>
+
 
 Open-source hybrid RAID storage manager for Ubuntu LTS that solves the biggest problem with traditional RAID: wasted capacity on mixed-size disks. Instead of limiting every drive to the smallest disk's size, PoolForge uses a tiered slicing algorithm to extract maximum usable space from every disk in the pool — typically 75-85% efficiency versus 30-40% with conventional RAID. Disks can be added or removed online, and the entire pool can be migrated to new hardware by serial number matching.
 

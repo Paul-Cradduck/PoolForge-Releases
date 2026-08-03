@@ -1,8 +1,8 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # PoolForge Installer for Ubuntu LTS
-# Usage: curl -sSL https://raw.githubusercontent.com/Paul-Cradduck/PoolForge-Releases/main/install.sh | sudo bash
+# Usage: curl -sSL https://github.com/Paul-Cradduck/PoolForge-Releases/releases/latest/download/install.sh | sudo bash
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,10 +26,14 @@ fi
 
 # Check architecture
 ARCH=$(uname -m)
-if [ "$ARCH" != "x86_64" ]; then
-  echo -e "${RED}Error: x86_64 required, got $ARCH${NC}"
-  exit 1
-fi
+case "$ARCH" in
+  x86_64) GOARCH="amd64" ;;
+  aarch64|arm64) GOARCH="arm64" ;;
+  *)
+    echo -e "${RED}Error: unsupported architecture $ARCH${NC}"
+    exit 1
+    ;;
+esac
 
 echo "Installing dependencies..."
 apt-get update -qq
@@ -50,16 +54,53 @@ for svc in $MDADM_SERVICES; do
 done
 echo -e "${GREEN}✓ mdadm auto-assembly disabled. PoolForge will manage all array assembly.${NC}"
 
-echo "Downloading PoolForge..."
-RELEASE_URL="https://github.com/Paul-Cradduck/PoolForge-Releases/releases/latest/download/poolforge-linux-amd64"
-if curl -fsSL "$RELEASE_URL" -o /usr/local/bin/poolforge 2>/dev/null; then
-  chmod +x /usr/local/bin/poolforge
-else
-  echo -e "${RED}✗ Failed to download PoolForge binary${NC}"
+echo "Downloading and verifying PoolForge..."
+ASSET="poolforge-linux-${GOARCH}"
+REPOSITORY_URL="https://github.com/Paul-Cradduck/PoolForge-Releases"
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+LATEST_RELEASE_URL=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$REPOSITORY_URL/releases/latest") || {
+  echo -e "${RED}✗ Failed to resolve the latest PoolForge release${NC}"
+  exit 1
+}
+RELEASE_TAG=$(printf '%s' "$LATEST_RELEASE_URL" | sed -n 's|.*/releases/tag/\([^/?]*\).*|\1|p')
+if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+(\.[0-9]+){1,2}(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo -e "${RED}✗ Could not determine a valid pinned release version${NC}"
   exit 1
 fi
-chmod +x /usr/local/bin/poolforge
-echo -e "${GREEN}✓ PoolForge binary installed${NC}"
+RELEASE_BASE="$REPOSITORY_URL/releases/download/${RELEASE_TAG}"
+curl -fsSL "$RELEASE_BASE/SHA256SUMS" -o "$TEMP_DIR/SHA256SUMS" || {
+  echo -e "${RED}✗ Failed to download release checksums${NC}"
+  exit 1
+}
+curl -fsSL "$RELEASE_BASE/$ASSET" -o "$TEMP_DIR/$ASSET" || {
+  echo -e "${RED}✗ Failed to download PoolForge binary${NC}"
+  exit 1
+}
+CHECKSUM_LINE=$(grep -E "^[0-9a-fA-F]{64}[[:space:]]+[*]?${ASSET}$" "$TEMP_DIR/SHA256SUMS" || true)
+if [ -z "$CHECKSUM_LINE" ]; then
+  echo -e "${RED}✗ SHA256SUMS does not contain ${ASSET}${NC}"
+  exit 1
+fi
+printf '%s\n' "$CHECKSUM_LINE" > "$TEMP_DIR/${ASSET}.sha256"
+(cd "$TEMP_DIR" && sha256sum -c "${ASSET}.sha256") || {
+  echo -e "${RED}✗ PoolForge checksum verification failed${NC}"
+  exit 1
+}
+chmod 0755 "$TEMP_DIR/$ASSET"
+BINARY_VERSION=$("$TEMP_DIR/$ASSET" --version 2>/dev/null | awk '{print $NF}')
+if [ "v$BINARY_VERSION" != "$RELEASE_TAG" ]; then
+  echo -e "${RED}✗ Binary version v${BINARY_VERSION} does not match release ${RELEASE_TAG}${NC}"
+  exit 1
+fi
+if [ -f /usr/local/bin/poolforge ]; then
+  cp -a /usr/local/bin/poolforge /usr/local/bin/poolforge.backup
+fi
+install -m 0755 "$TEMP_DIR/$ASSET" /usr/local/bin/poolforge.new
+sync /usr/local/bin/poolforge.new
+mv -f /usr/local/bin/poolforge.new /usr/local/bin/poolforge
+echo -e "${GREEN}✓ PoolForge ${RELEASE_TAG} installed (checksum and version verified)${NC}"
 
 # Create data directory
 mkdir -p /var/lib/poolforge

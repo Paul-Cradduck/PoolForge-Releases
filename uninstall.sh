@@ -77,5 +77,5 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo "Note: mdadm, lvm2, and smartmontools were NOT removed."
 echo "Your RAID arrays, LVM volumes, and data are untouched."
-echo "To re-install: curl -sSL https://raw.githubusercontent.com/Paul-Cradduck/PoolForge-Releases/main/install.sh | sudo bash"
+echo "To re-install: curl -sSL https://github.com/Paul-Cradduck/PoolForge-Releases/releases/latest/download/install.sh | sudo bash"
 echo ""

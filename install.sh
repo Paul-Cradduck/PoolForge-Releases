@@ -106,29 +106,6 @@ echo -e "${GREEN}✓ PoolForge ${RELEASE_TAG} installed (checksum and version ve
 mkdir -p /var/lib/poolforge
 echo -e "${GREEN}✓ Data directory created${NC}"
 
-# Create systemd service
-cat > /etc/systemd/system/poolforge.service << 'EOF'
-[Unit]
-Description=PoolForge Storage Manager
-After=network.target mdadm.service lvm2-activation.service
-Wants=mdadm.service lvm2-activation.service
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/poolforge serve --addr 0.0.0.0:8080
-Restart=on-failure
-RestartSec=5
-TimeoutStopSec=5
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable poolforge
-echo -e "${GREEN}✓ Systemd service created and enabled${NC}"
-
 # Create config for auth (optional)
 if [ ! -f /etc/poolforge.conf ]; then
   cat > /etc/poolforge.conf << 'EOF'
@@ -141,8 +118,12 @@ if [ ! -f /etc/poolforge.conf ]; then
 EOF
   echo -e "${GREEN}✓ Config file created at /etc/poolforge.conf${NC}"
 fi
+chown root:root /etc/poolforge.conf
+chmod 0600 /etc/poolforge.conf
+echo -e "${GREEN}✓ Config permissions restricted to root${NC}"
 
-# Update service to use config
+# Create service. PoolForge reads credentials from the protected environment
+# file so passwords never appear in process arguments or systemctl status.
 cat > /etc/systemd/system/poolforge.service << 'EOF'
 [Unit]
 Description=PoolForge Storage Manager
@@ -152,11 +133,7 @@ Wants=mdadm.service lvm2-activation.service
 [Service]
 Type=simple
 EnvironmentFile=-/etc/poolforge.conf
-ExecStart=/bin/bash -c '/usr/local/bin/poolforge serve \
-  --addr ${POOLFORGE_ADDR:-0.0.0.0:8080} \
-  ${POOLFORGE_USER:+--user $POOLFORGE_USER} \
-  ${POOLFORGE_PASS:+--pass $POOLFORGE_PASS} \
-  ${POOLFORGE_WEBHOOK:+--webhook $POOLFORGE_WEBHOOK}'
+ExecStart=/usr/local/bin/poolforge serve
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=5
@@ -165,7 +142,15 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 EOF
+
 systemctl daemon-reload
+systemctl enable poolforge
+if systemctl is-active --quiet poolforge; then
+  systemctl restart poolforge
+  echo -e "${GREEN}✓ Running PoolForge service restarted with protected credentials${NC}"
+else
+  echo -e "${GREEN}✓ Systemd service created and enabled${NC}"
+fi
 
 # Phase 5: Back up existing metadata for safe upgrade
 METADATA_FILE="/var/lib/poolforge/metadata.json"
